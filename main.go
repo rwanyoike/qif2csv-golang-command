@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/csv"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -19,14 +20,29 @@ type Entry struct {
 	Amount    string
 }
 
-func qifToCsv(path string, writer csv.Writer) error {
-	file, err := os.Open(path)
+func findQif(qifPaths *[]string) fs.WalkDirFunc {
+	return func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Name()[0] == '.' {
+			return filepath.SkipDir
+		}
+		if !d.IsDir() && filepath.Ext(path) == ".qif" {
+			*qifPaths = append(*qifPaths, path)
+		}
+		return nil
+	}
+}
+
+func fromQifToCsv(qifPath string, writer csv.Writer) error {
+	qifFile, err := os.Open(qifPath)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer qifFile.Close()
 
-	scanner := bufio.NewScanner(file)
+	scanner := bufio.NewScanner(qifFile)
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -34,7 +50,7 @@ func qifToCsv(path string, writer csv.Writer) error {
 			continue
 		}
 		if !strings.HasPrefix(line, "!Type:") {
-			log.Fatalf("invalid qif header '%s'", line)
+			return fmt.Errorf("'%s' invalid qif header", qifPath)
 		}
 		break
 	}
@@ -75,7 +91,7 @@ func qifToCsv(path string, writer csv.Writer) error {
 			}
 			entry = Entry{}
 		default:
-			log.Printf("unknown field '%s'\n", line)
+			log.Printf("unknown field code '%q'", code)
 		}
 	}
 
@@ -89,24 +105,34 @@ func qifToCsv(path string, writer csv.Writer) error {
 func main() {
 	log.SetFlags(log.Lshortfile)
 
-	qifPath := os.Args[1] // target .qif
+	dirPath := os.Args[1] // search .qif
+	csvPath := os.Args[2] // output file
 
-	writer := csv.NewWriter(os.Stdout)
+	var qifPaths []string
+	err := filepath.WalkDir(dirPath, findQif(&qifPaths))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	csvFile, err := os.Create(csvPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer csvFile.Close()
+
+	writer := csv.NewWriter(csvFile)
 	defer writer.Flush()
 
-	err := writer.Write([]string{"date", "reference", "note", "amount"})
+	err = writer.Write([]string{"date", "reference", "note", "amount"})
 	if err != nil {
-		log.Fatalln(err)
+		log.Fatal(err)
 	}
 
-	path, err := filepath.Abs(qifPath)
-	if err != nil {
-		log.Fatalln(err)
-	}
-
-	log.Printf("parsing '%s'\n", path)
-	err = qifToCsv(qifPath, *writer)
-	if err != nil {
-		log.Fatalln(err)
+	for _, qifPath := range qifPaths {
+		fmt.Println("parsing: ", qifPath)
+		err := fromQifToCsv(qifPath, *writer)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 }
